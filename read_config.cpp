@@ -18,6 +18,19 @@ std::string extract_filepath(const std::string& s)
     return s;
 }
 
+std::string extract_filename(const std::string& s)
+{
+    std::string::size_type pos = 0;
+    if((pos = s.find_last_of(":\\/")) != std::string::npos)
+    {
+        return s.substr(pos+1);
+    }
+	else 
+	{
+		return s;
+	}
+}
+
 BOOL file_exists (const char *filename) 
 {
     FILE *fp;
@@ -80,6 +93,7 @@ time_t transfer_time(const char *human_time)
         &tmp.tm_min,
         &tmp.tm_sec);
     tmp.tm_year -= 1900;
+	tmp.tm_mon -= 1;
     return mktime(&tmp);
 }
 
@@ -118,16 +132,64 @@ void read_xml_config(const char *xml_file)
 	return;
 }
 
+void write_setup_time(time_t setup_time, FILE *fp)
+{
+    struct tm *tmp_tm;
+    char time_str[50];
+    tmp_tm = gmtime(&setup_time);
+    sprintf(time_str, "%04d-%02d-%02d %02d:%02d:%02d",
+        tmp_tm->tm_year + 1900,
+        tmp_tm->tm_mon + 1,
+        tmp_tm->tm_mday,
+        tmp_tm->tm_hour,
+        tmp_tm->tm_min,
+        tmp_tm->tm_sec);
+    fputs("<setup_time>", fp);
+    fputs(time_str, fp);
+    fputs("</setup_time>\n", fp);
+}
+
+void write_hook_dll(const char *filename, FILE *fp)
+{
+	char buf[512];
+	sprintf(buf, "<hook_dll name=\"%s\">\n", filename);
+    fputs(buf, fp);
+    fputs("    <hook_func name=\"GetSystemTimeAsFileTime\" import=\"Kernel32.dll\"/>\n", fp);
+    fputs("</hook_dll>\n", fp);
+}
+
+void write_config_file(const char *filename, const char *hook_dll, time_t setup_time)
+{
+    FILE *fp = fopen(filename, "w");
+    if (fp != NULL)
+    {
+        fputs("<config>\n", fp);
+        write_setup_time(setup_time, fp);
+        write_hook_dll(hook_dll, fp);
+        fputs("</config>\n", fp);
+        fclose(fp);
+    }
+}
+
 void read_config(void *module)
 {
-    char config_path[MAX_PATH];
-    char tmp_path[MAX_PATH];
-    GetModuleFileName((HMODULE)module, tmp_path, sizeof(tmp_path));
-    strcpy(config_path, extract_filepath(tmp_path).c_str());
+    char mod_fullpath[MAX_PATH];
+	char config_path[MAX_PATH];
+    GetModuleFileName((HMODULE)module, mod_fullpath, sizeof(mod_fullpath));
+    strcpy(config_path, extract_filepath(mod_fullpath).c_str());
     strcat(config_path, "config.xml");
-    log_info(("xml config path: %s", config_path));
-    if(file_exists(config_path))
+    log_info(("module file path: %s, xml config path: %s.\n",
+		mod_fullpath, 
+		config_path));
+    if(!file_exists(config_path))
     {
-        read_xml_config(config_path);
+		char app_fullpath[MAX_PATH];
+		char app_filename[MAX_PATH];
+		GetModuleFileName(NULL, app_fullpath, sizeof(app_fullpath));
+		time_t setup_time = time(NULL);
+		strcpy(app_filename, extract_filename(app_fullpath).c_str());
+		write_config_file(config_path, app_filename, setup_time);
     }
+
+	read_xml_config(config_path);
 }
