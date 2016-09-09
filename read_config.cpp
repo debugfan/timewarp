@@ -45,40 +45,48 @@ BOOL file_exists (const char *filename)
     }   
 }
 
-void parse_iat_hook_item(hook_item_t &hook_item, xmlNodePtr node)
+void parse_hook_item(hook_item_t &hook_item, xmlNodePtr node)
 {
-    hook_item.dll_name = strdup((char *)xmlGetProp(node, (xmlChar *)"import"));
-    hook_item.func_name = strdup((char *)xmlGetProp(node, (xmlChar *)"name"));
+	xmlChar *import_name;
+	xmlChar *func_name;
+    import_name = xmlGetProp(node, (xmlChar *)"import");
+	if(import_name != NULL)
+	{
+		hook_item.dll_name = strdup((char *)import_name);
+		xmlFree(import_name);
+	}
+    func_name = xmlGetProp(node, (xmlChar *)"name");
+	if(func_name != NULL)
+	{
+		hook_item.func_name = strdup((char *)func_name);
+		xmlFree(func_name);
+	}
 }
 
-void parse_hook_dll(hook_dll_t &dll_list, xmlDoc *doc, xmlNode *node)
+void parse_hook_dll(hook_dll_t &hook_dll, xmlDoc *doc, xmlNode *node)
 {
-	xmlChar *xpath = (xmlChar*) "hook_func";
 	xmlNodeSetPtr nodeset;
 	xmlXPathObjectPtr pathobj;
     hook_item_t hook_item;
 
-	pathobj = getNodeset (doc, node, xpath);
-	if (pathobj) {
+	xmlChar *dll_name = xmlGetProp(node, (xmlChar *)"name");
+	if(dll_name != NULL)
+	{
+		hook_dll.hook_dll = strdup((char *)dll_name);
+		xmlFree(dll_name);
+	}
+
+	pathobj = getNodeset (doc, node, (xmlChar *)"hook_func");
+	if (pathobj) 
+	{
 		nodeset = pathobj->nodesetval;
 		for (int i=0; i < nodeset->nodeNr; i++) 
 		{
-			parse_iat_hook_item(hook_item, nodeset->nodeTab[i]);
-            dll_list.hook_list.push_back(hook_item);
+			parse_hook_item(hook_item, nodeset->nodeTab[i]);
+            hook_dll.hook_list.push_back(hook_item);
 		}
 		xmlXPathFreeObject (pathobj);
 	}    
-}
-
-void get_hook_list(std::list<hook_dll_t> &dll_list, xmlDoc *doc, xmlNodeSet *nodeset)
-{
-    hook_dll_t hook_dll;
-	for (int i=0; i < nodeset->nodeNr; i++) 
-	{
-        hook_dll.hook_dll = (char *)xmlGetProp(nodeset->nodeTab[i], (xmlChar *)"name");
-		parse_hook_dll(hook_dll, doc, nodeset->nodeTab[i]);
-        dll_list.push_back(hook_dll);
-	}
 }
 
 time_t transfer_time(const char *human_time)
@@ -97,6 +105,111 @@ time_t transfer_time(const char *human_time)
     return mktime(&tmp);
 }
 
+static HKEY get_rootkey(LPSTR key)
+{
+    static const CHAR szHKLM[] = "HKLM";
+    static const CHAR szHKEY_LOCAL_MACHINE[] = "HKEY_LOCAL_MACHINE";
+    static const CHAR szHKCU[] = "HKCU";
+    static const CHAR szHKEY_CURRENT_USER[] = "HKEY_CURRENT_USER";
+    static const CHAR szHKCR[] = "HKCR";
+    static const CHAR szHKEY_CLASSES_ROOT[] = "HKEY_CLASSES_ROOT";
+    static const CHAR szHKU[] = "HKU";
+    static const CHAR szHKEY_USERS[] = "HKEY_USERS";
+    static const CHAR szHKCC[] = "HKCC";
+    static const CHAR szHKEY_CURRENT_CONFIG[] = "HKEY_CURRENT_CONFIG";
+
+    if (CompareString(CP_ACP,NORM_IGNORECASE, key, 4, szHKLM, 4) == CSTR_EQUAL ||
+        CompareString(CP_ACP,NORM_IGNORECASE, key, 18, szHKEY_LOCAL_MACHINE,18) == CSTR_EQUAL)
+        return HKEY_LOCAL_MACHINE;
+    else if (CompareString(CP_ACP,NORM_IGNORECASE, key, 4, szHKCU, 4) == CSTR_EQUAL ||
+             CompareString(CP_ACP,NORM_IGNORECASE, key, 17, szHKEY_CURRENT_USER,17) == CSTR_EQUAL)
+        return HKEY_CURRENT_USER;
+    else if (CompareString(CP_ACP,NORM_IGNORECASE, key, 4, szHKCR, 4) == CSTR_EQUAL ||
+             CompareString(CP_ACP,NORM_IGNORECASE, key, 17, szHKEY_CLASSES_ROOT,17) == CSTR_EQUAL)
+        return HKEY_CLASSES_ROOT;
+    else if (CompareString(CP_ACP,NORM_IGNORECASE, key, 3, szHKU, 3) == CSTR_EQUAL ||
+             CompareString(CP_ACP,NORM_IGNORECASE, key, 10, szHKEY_USERS,10) == CSTR_EQUAL)
+        return HKEY_USERS;
+    else if (CompareString(CP_ACP,NORM_IGNORECASE, key, 4, szHKCC, 4) == CSTR_EQUAL ||
+             CompareString(CP_ACP,NORM_IGNORECASE, key, 19, szHKEY_CURRENT_CONFIG, 19) == CSTR_EQUAL)
+        return HKEY_CURRENT_CONFIG;
+    else return NULL;
+}
+
+time_t parse_setup_time(xmlNode *node)
+{
+	xmlChar *type = NULL;
+	time_t setup_time = 0;
+	type = xmlGetProp(node, (xmlChar *)"type");
+	if(type == NULL || 0 == strcmp((char *)type, "assign")) 
+	{
+		xmlChar *content = xmlNodeGetContent(node);
+		if(content != NULL)
+		{
+			setup_time = transfer_time((char *)content);
+			xmlFree(content);
+		}
+	}
+	else if(0 == strcmp((char *)type, "registry"))
+	{
+		HKEY hKey;
+		DWORD stored_value;
+		DWORD value_size;
+
+		xmlChar *root_key = xmlGetProp(node, (xmlChar *)"root");
+		xmlChar *sub_key = xmlGetProp(node, (xmlChar *)"key");
+		xmlChar *value_name = xmlGetProp(node, (xmlChar *)"value_name");
+    
+        if (ERROR_SUCCESS == RegOpenKeyExA(get_rootkey((char *)root_key),
+            (char *)sub_key,
+            0,
+            KEY_ALL_ACCESS,
+            &hKey))
+        {
+			value_size = sizeof(stored_value);
+			if (ERROR_SUCCESS == RegQueryValueExA(hKey,
+				(char *)value_name,
+				NULL,
+				NULL,
+				(LPBYTE)&stored_value,
+				&value_size))
+			{
+				setup_time = stored_value;
+			}
+			else
+			{
+				log_error(("RegQueryValueExA failed. error code: %d\n", GetLastError()));
+			}
+
+			RegCloseKey(hKey);
+        }
+		else
+		{
+			log_error(("RegOpenKeyExA failed. error code: %d\n", GetLastError()));
+		}
+
+		if(root_key != NULL)
+		{
+			xmlFree(root_key);
+		}
+		if(sub_key != NULL)
+		{
+			xmlFree(sub_key);
+		}
+		if(value_name != NULL)
+		{
+			xmlFree(value_name);
+		}
+	}
+
+	if(type != NULL)
+	{
+		xmlFree(type);
+	}
+
+	return setup_time;
+}
+
 void read_xml_config(const char *xml_file)
 {
 	xmlDocPtr doc;
@@ -112,7 +225,12 @@ void read_xml_config(const char *xml_file)
 		if (pathobj) 
 		{
 			nodeset = pathobj->nodesetval;
-			get_hook_list(g_hook_list, doc, nodeset);
+			for (int i=0; i < nodeset->nodeNr; i++) 
+			{
+				hook_dll_t hook_dll;
+				parse_hook_dll(hook_dll, doc, nodeset->nodeTab[i]);
+				g_hook_list.push_back(hook_dll);
+			}
 			xmlXPathFreeObject (pathobj);
 		}
 
@@ -120,9 +238,14 @@ void read_xml_config(const char *xml_file)
 		if (pathobj) 
 		{
 			nodeset = pathobj->nodesetval;
-			for (int i=0; i < nodeset->nodeNr; i++) 
+			for (int i = 0; i < nodeset->nodeNr; i++) 
 			{
-				g_setup_time = transfer_time((char *)xmlNodeGetContent(nodeset->nodeTab[i]));
+				time_t setup_time = parse_setup_time(nodeset->nodeTab[i]);
+				if(setup_time != 0)
+				{
+					g_setup_time = setup_time;
+					break;
+				}
 			}
 			xmlXPathFreeObject (pathobj);
 		}
