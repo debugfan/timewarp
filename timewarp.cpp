@@ -37,7 +37,9 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD dwReason, LPVOID reserved)
     if (dwReason == DLL_PROCESS_ATTACH) {
         read_config(hinst);
         Sleep(200);
-        set_elapsed_time(caculate_elapsed_time());
+		time_t elapsed = caculate_elapsed_time();
+		log_info(("elapsed time: %d.\n", elapsed));
+        set_elapsed_time(elapsed);
 
         for(iter = g_hook_list.begin();
             iter != g_hook_list.end();

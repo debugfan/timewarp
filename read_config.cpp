@@ -241,6 +241,7 @@ void read_xml_config(const char *xml_file)
 			for (int i = 0; i < nodeset->nodeNr; i++) 
 			{
 				time_t setup_time = parse_setup_time(nodeset->nodeTab[i]);
+				log_info(("setup time: %d.\n", setup_time));
 				if(setup_time != 0)
 				{
 					g_setup_time = setup_time;
